@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Black Timer</title>
+<style>
+:root{color-scheme:dark;--ink:#e8e8e8;--dim:#6b6b6b;--line:#2a2a2a;box-sizing:border-box}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+html,body{height:100%;margin:0;background:#000;color:var(--ink);overflow:hidden;font-family:"Helvetica Neue",system-ui,sans-serif}
+#app{position:fixed;inset:0;background:#000;display:flex;flex-direction:column;
+ padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
+.bar{display:flex;justify-content:center;gap:6px;padding:14px;transition:opacity .6s}
+.bar button,.chips button,.ctl button{background:none;border:1px solid var(--line);color:var(--dim);font:inherit;font-size:15px;padding:10px 18px;border-radius:999px}
+.bar button.on{color:#000;background:var(--ink);border-color:var(--ink)}
+#stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0}
+#time{font-weight:100;font-size:min(16.5vw,36vh);letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1;white-space:nowrap}
+#sub{margin-top:2vh;color:var(--dim);font-size:min(4vw,5vh);font-weight:300;height:1.4em}
+.foot{padding:14px 14px 22px;display:flex;flex-direction:column;align-items:center;gap:14px;transition:opacity .6s}
+.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center;color:var(--dim);font-size:14px}
+.chips input{width:76px;background:#000;border:1px solid var(--line);color:var(--ink);font:inherit;font-size:16px;padding:9px;border-radius:12px;text-align:center}
+.chips button.on{color:var(--ink);border-color:var(--dim)}
+.ctl{display:flex;gap:10px}
+.ctl .main{color:#000;background:var(--ink);border-color:var(--ink);min-width:130px;font-weight:600}
+.hide .bar,.hide .foot{opacity:0;pointer-events:none}
+.hidden{display:none!important}
+
+/* shimmer */
+#glow{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity 1.2s;
+ background:radial-gradient(circle at 20% 30%,#ff2e93aa,transparent 45%),radial-gradient(circle at 80% 25%,#2ee6ffaa,transparent 45%),radial-gradient(circle at 50% 85%,#ffd21eaa,transparent 50%),radial-gradient(circle at 15% 85%,#7b5cffaa,transparent 45%);
+ filter:blur(30px);mix-blend-mode:screen}
+.shim #glow{opacity:.75;animation:drift 6s ease-in-out infinite alternate,hue 5s linear infinite}
+.shim #time{background:linear-gradient(100deg,#ff2e93,#ffd21e,#2ee6ff,#7b5cff,#ff2e93,#ffd21e,#2ee6ff);background-size:300% 100%;
+ -webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;font-weight:300;animation:sweep 2.2s linear infinite}
+.shim #sub{color:var(--ink)}
+.shim::after{content:"";position:absolute;inset:0;pointer-events:none;
+ background:linear-gradient(115deg,transparent 35%,#ffffff33 50%,transparent 65%);background-size:250% 100%;animation:sheen 2.8s linear infinite}
+@keyframes sweep{to{background-position:-300% 0}}
+@keyframes sheen{from{background-position:150% 0}to{background-position:-150% 0}}
+@keyframes drift{from{transform:scale(1) rotate(0)}to{transform:scale(1.25) rotate(14deg)}}
+@keyframes hue{to{filter:blur(30px) hue-rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.shim #glow,.shim #time,.shim::after{animation-duration:12s}}
+</style>
+</head>
+<body>
+<div id="app" class="hide">
+  <div id="glow"></div>
+  <div class="bar" id="bar">
+    <button data-m="clock">Clock</button>
+    <button data-m="stopwatch">Stopwatch</button>
+    <button data-m="timer">Timer</button>
+  </div>
+  <div id="stage">
+    <div id="time">00:00:00</div>
+    <div id="sub"></div>
+  </div>
+  <div class="foot" id="foot">
+    <div class="chips" id="chips"></div>
+    <div class="ctl" id="ctl">
+      <button id="reset">Reset</button>
+      <button id="go" class="main">Start</button>
+      <button id="fs">Full screen</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  var app=$('app'),timeEl=$('time'),subEl=$('sub'),chips=$('chips'),go=$('go');
+  var S={mode:'clock',sw:{run:false,base:0,t0:0,last:0},tm:{run:false,dur:25,rem:25*60000,end:0},every:60};
+  try{var saved=JSON.parse(localStorage.getItem('bt')||'null');if(saved){S.mode=saved.mode||'clock';S.every=saved.every||60;S.tm.dur=saved.dur||25;S.tm.rem=S.tm.dur*60000}}catch(e){}
+  function save(){try{localStorage.setItem('bt',JSON.stringify({mode:S.mode,every:S.every,dur:S.tm.dur}))}catch(e){}}
+
+  var pad=function(n){return (n<10?'0':'')+n};
+  function fmt(ms){var s=Math.floor(ms/1000);return pad(Math.floor(s/3600))+':'+pad(Math.floor(s%3600/60))+':'+pad(s%60)}
+
+  /* shimmer + chime */
+  var shimTimer=null,ac=null;
+  function chime(){
+    try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+      [660,880,1320].forEach(function(f,i){var o=ac.createOscillator(),g=ac.createGain(),t=ac.currentTime+i*.22;
+        o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.18,t+.03);g.gain.exponentialRampToValueAtTime(.001,t+1.4);
+        o.connect(g);g.connect(ac.destination);o.start(t);o.stop(t+1.5)})}catch(e){}
+    try{navigator.vibrate&&navigator.vibrate([200,100,200,100,400])}catch(e){}
+  }
+  function shimmer(label){
+    app.classList.add('shim');subEl.textContent=label;chime();
+    clearTimeout(shimTimer);shimTimer=setTimeout(stopShimmer,20000);
+  }
+  function stopShimmer(){app.classList.remove('shim');clearTimeout(shimTimer);render()}
+
+  /* wake lock */
+  var wl=null;
+  function lock(){try{if(navigator.wakeLock&&!wl){navigator.wakeLock.request('screen').then(function(l){wl=l;l.addEventListener('release',function(){wl=null})}).catch(function(){})}}catch(e){}}
+  document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')lock()});
+  lock();
+
+  /* modes */
+  function swElapsed(){return S.sw.base+(S.sw.run?performance.now()-S.sw.t0:0)}
+  var lastHour=new Date().getHours();
+
+  function render(){
+    var shim=app.classList.contains('shim');
+    if(S.mode==='clock'){
+      var d=new Date();timeEl.textContent=pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+      if(!shim)subEl.textContent=d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});
+      if(d.getHours()!==lastHour){lastHour=d.getHours();if(d.getMinutes()===0)shimmer(pad(lastHour)+':00')}
+    }else if(S.mode==='stopwatch'){
+      var e=swElapsed();timeEl.textContent=fmt(e);
+      if(!shim)subEl.textContent=S.sw.run?'Shimmer every '+labelMin(S.every):(e?'Paused':'Ready');
+      var c=Math.floor(e/(S.every*60000));
+      if(c>S.sw.last){S.sw.last=c;shimmer(labelMin(c*S.every)+' complete')}
+    }else{
+      if(S.tm.run){S.tm.rem=Math.max(0,S.tm.end-performance.now());
+        if(S.tm.rem===0){S.tm.run=false;S.tm.rem=S.tm.dur*60000;shimmer('Session complete');syncBtn()}}
+      timeEl.textContent=fmt(Math.ceil(S.tm.rem/1000)*1000);
+      if(!shim)subEl.textContent=S.tm.run?'Session '+labelMin(S.tm.dur):'Set a session below';
+    }
+  }
+  function labelMin(m){return m%60===0?(m/60)+(m===60?' hour':' hours'):m+' min'}
+
+  function buildChips(){
+    chips.innerHTML='';
+    if(S.mode==='clock'){chips.classList.add('hidden');$('ctl').classList.add('clockonly');}
+    else chips.classList.remove('hidden');
+    $('reset').classList.toggle('hidden',S.mode==='clock');go.classList.toggle('hidden',S.mode==='clock');
+    if(S.mode==='clock')return;
+    var cur=S.mode==='timer'?S.tm.dur:S.every,presets=S.mode==='timer'?[15,25,45,60]:[15,30,60];
+    var lab=document.createElement('span');lab.textContent=S.mode==='timer'?'Session':'Shimmer every';chips.appendChild(lab);
+    presets.forEach(function(p){var b=document.createElement('button');b.textContent=p;b.className=p===cur?'on':'';b.onclick=function(e){e.stopPropagation();setVal(p)};chips.appendChild(b)});
+    var i=document.createElement('input');i.type='number';i.min=1;i.max=1440;i.inputMode='numeric';i.value=cur;i.style.userSelect='text';
+    i.onchange=function(){var v=Math.max(1,Math.min(1440,parseInt(i.value)||cur));setVal(v)};chips.appendChild(i);
+    var u=document.createElement('span');u.textContent='min';chips.appendChild(u);
+  }
+  function setVal(v){
+    if(S.mode==='timer'){S.tm.dur=v;S.tm.run=false;S.tm.rem=v*60000;}
+    else{S.every=v;S.sw.last=Math.floor(swElapsed()/(v*60000))}
+    save();buildChips();syncBtn();render();
+  }
+  function syncBtn(){
+    var run=S.mode==='timer'?S.tm.run:S.sw.run;
+    go.textContent=run?'Pause':'Start';
+  }
+  function setMode(m){
+    S.mode=m;stopShimmer();save();
+    document.querySelectorAll('#bar button').forEach(function(b){b.classList.toggle('on',b.dataset.m===m)});
+    buildChips();syncBtn();render();
+  }
+  document.querySelectorAll('#bar button').forEach(function(b){b.onclick=function(e){e.stopPropagation();setMode(b.dataset.m)}});
+
+  go.onclick=function(e){e.stopPropagation();lock();stopShimmer();
+    if(S.mode==='stopwatch'){var s=S.sw;if(s.run){s.base+=performance.now()-s.t0;s.run=false}else{s.t0=performance.now();s.run=true}}
+    else if(S.mode==='timer'){var t=S.tm;if(t.run){t.rem=Math.max(0,t.end-performance.now());t.run=false}else{t.end=performance.now()+t.rem;t.run=true}}
+    syncBtn();render();scheduleHide()};
+  $('reset').onclick=function(e){e.stopPropagation();stopShimmer();
+    if(S.mode==='stopwatch'){S.sw={run:false,base:0,t0:0,last:0}}
+    else{S.tm.run=false;S.tm.rem=S.tm.dur*60000}
+    syncBtn();render()};
+
+  function fsOn(){return document.fullscreenElement||document.webkitFullscreenElement}
+  $('fs').onclick=function(e){e.stopPropagation();
+    var el=document.documentElement;
+    try{if(fsOn()){(document.exitFullscreen||document.webkitExitFullscreen).call(document)}
+    else{(el.requestFullscreen||el.webkitRequestFullscreen).call(el);try{screen.orientation.lock&&screen.orientation.lock('any').catch(function(){})}catch(x){}}}catch(x){}
+  };
+  document.addEventListener('fullscreenchange',function(){$('fs').textContent=fsOn()?'Exit full screen':'Full screen'});
+
+  /* auto-hide controls; tap shows/hides, tap during shimmer dismisses it */
+  var hideT=null;
+  function scheduleHide(){clearTimeout(hideT);hideT=setTimeout(function(){app.classList.add('hide')},4000)}
+  app.addEventListener('click',function(e){
+    if(e.target.closest('.bar,.foot'))return scheduleHide();
+    if(app.classList.contains('shim')){stopShimmer();return}
+    if(app.classList.contains('hide')){app.classList.remove('hide');scheduleHide()}else app.classList.add('hide');
+  });
+  app.addEventListener('input',scheduleHide);
+
+  document.addEventListener('click',function(){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();if(ac.state==='suspended')ac.resume()}catch(e){}});
+  if(window.Capacitor){$('fs').classList.add('hidden')}
+  setInterval(render,100);
+  setMode(S.mode);
+  app.classList.remove('hide');scheduleHide();
+})();
+</script>
+</body>
+</html>
